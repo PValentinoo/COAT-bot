@@ -1,0 +1,3 @@
+# Allow my env files ⬇️
+!.env
+!.env.local
