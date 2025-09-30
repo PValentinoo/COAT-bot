@@ -557,14 +557,14 @@ def main() -> None:
         output_folder = default_folder
 
     # Excel-rapport
-    excel_out_path = args.export_xlsx or os.path.join(output_folder, "preview_report.xlsx")
+    excel_out_path = args.export_xlsx or os.path.join(output_folder, "COAT data.xlsx")
     if not excel_out_path.lower().endswith('.xlsx'):
-        excel_out_path = os.path.join(output_folder, "preview_report.xlsx")
+        excel_out_path = os.path.join(output_folder, "COAT data.xlsx")
     saved_xlsx = export_to_excel(xlsx_path, mapping, args.similarity, args.max_examples, excel_out_path)
     print(f"Excel-rapport gemt: {saved_xlsx}")
 
     # Preview-tekst (matcher [Context]/[Formulas])
-    text_out_path = args.out or os.path.join(output_folder, "preview_text.txt")
+    text_out_path = args.out or os.path.join(output_folder, "COAT prompt.txt")
     with open(text_out_path, "w", encoding="utf-8") as f:
         f.write(preview_text)
     print(f"Preview-tekst gemt: {text_out_path}")
