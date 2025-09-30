@@ -225,7 +225,7 @@ def export_to_excel(
 
     # Summary sheet
     ws_sum = wb_out.active
-    ws_sum.title = "Summary"
+    ws_sum.title = "Opsummering"
     total_formula_cells = sum(len(locs) for locs in mapping.values())
     ws_sum["A1"] = "Input fil"
     ws_sum["B1"] = xlsx_input
@@ -233,14 +233,13 @@ def export_to_excel(
     ws_sum["B2"] = total_formula_cells
     ws_sum["A3"] = "Unikke formler"
     ws_sum["B3"] = len(mapping)
-    ws_sum.freeze_panes = "A2"
 
     # Context sheet: unique non-formula text values with counts and examples
     try:
         texts_mapping = collect_text_cells(xlsx_input)
     except Exception:
         texts_mapping = {}
-    ws_txt = wb_out.create_sheet("Context")
+    ws_txt = wb_out.create_sheet("Kontekst")
     ws_txt["A1"] = "Ark"
     ws_txt["B1"] = "Tekst"
     ws_txt["C1"] = "Forekomster"
@@ -277,7 +276,7 @@ def export_to_excel(
     ws_txt.add_table(table_txt)
 
     # Unique formulas sheet (repurposed to Normalized summary with example value), placed after Context
-    ws_uniq = wb_out.create_sheet("Unique Formulas")
+    ws_uniq = wb_out.create_sheet("Formler")
     ws_uniq["A1"] = "Ark"
     ws_uniq["B1"] = "Forekomster (gruppe)"
     ws_uniq["C1"] = "Normaliseret"
@@ -341,7 +340,7 @@ def export_to_excel(
 
     if similarity:
         # Raw data sheet (formerly Similarity Groups)
-        ws_sim = wb_out.create_sheet("Raw data")
+        ws_sim = wb_out.create_sheet("Rå data")
         ws_sim["A1"] = "Ark"
         ws_sim["B1"] = "Gruppe total"
         ws_sim["C1"] = "Normaliseret"
@@ -392,8 +391,6 @@ def export_to_excel(
         table_sim.tableStyleInfo = style
         ws_sim.add_table(table_sim)
 
-    # (Removed legacy 'Texts' tab; 'Context' tab already provides this information.)
-
     # Build aggregated strings for Summary sheet (for chatbot copy-paste)
     # Context aggregation: 25 longest unique texts
     try:
@@ -421,9 +418,9 @@ def export_to_excel(
     ws_sum["B5"] = formulas_agg
     # Add Prompt cell for LLM usage
     prompt_text = (
-        "Du er en dansk Excel-ekspert. Brug FELTERNE nedenfor som input:\n\n"
-        "[Context] = celle B4 (sammenfattet kontekst)\n"
-        "[Formulas] = celle B5 (én linje pr. formelgruppe: Ark | Forekomster | Normaliseret | Eksempel | Lokation)\n\n"
+        "Du er en dansk Excel-ekspert. Brug vedhæftet data som input:\n\n"
+        "[Context] = sammenfattet kontekst\n"
+        "[Formulas] = én linje pr. formelgruppe: Ark | Forekomster | Normaliseret | Eksempel | Lokation\n\n"
         "Opgave:\n"
         "1) Læs Context for at forstå faglige begreber og terminologi.\n"
         "2) For hver formelgruppe i Formulas, lav en pædagogisk forklaring i en tabel med kolonnerne:\n"
@@ -448,6 +445,70 @@ def export_to_excel(
     wb_out.save(out_path)
     return out_path
 
+def build_preview_text(xlsx_input: str,
+                       mapping: Dict[str, List[Tuple[str, str]]],
+                       max_examples: int) -> str:
+    """
+    Returnerer en tekst, som matcher prompt-input:
+    [Context]
+    <sammenfattet kontekst>
+
+    [Formulas]
+    Ark: <ark> | Forekomster: <total> | Normaliseret: <norm> | Eksempel: <formel m/ værdier> | Lokation: <ark!celle>
+    (én linje per normaliseret gruppe, sorteret som i Excel-rapporten)
+    """
+    # --- Context-aggregation (samme logik som i export_to_excel) ---
+    try:
+        texts_mapping = collect_text_cells(xlsx_input)
+        all_texts = list(texts_mapping.keys())
+    except Exception:
+        all_texts = []
+    all_texts.sort(key=lambda t: len(t or ""), reverse=True)
+    top_texts = all_texts[:25]
+    context_agg = "\n\n".join(t for t in top_texts if t)
+
+    # --- Formler-aggregation (samme logik som i export_to_excel) ---
+    # Byg normaliserede grupper og spring trivielle direkte refs over
+    groups: Dict[str, List[str]] = defaultdict(list)
+    for formula in mapping.keys():
+        if DIRECT_REF_RE.match(formula):
+            continue
+        groups[normalize_formula(formula)].append(formula)
+
+    # workbook med beregnede værdier til "Eksempel"
+    try:
+        wb_values = load_workbook(filename=xlsx_input, data_only=True)
+    except Exception:
+        wb_values = None
+
+    # Sortér grupper efter total forekomster (desc), som i Excel-arket
+    group_rows: List[Tuple[int, str]] = []
+    for norm, originals in groups.items():
+        total = sum(len(mapping[o]) for o in set(originals))
+        group_rows.append((total, norm))
+    group_rows.sort(key=lambda x: (-x[0], x[1]))
+
+    lines = []
+    for total, norm in group_rows:
+        variants = [(len(mapping[o]), o) for o in set(groups[norm])]
+        variants.sort(key=lambda x: (-x[0], x[1]))
+        example_formula = variants[0][1]
+        example_loc = mapping[example_formula][0] if mapping[example_formula] else ("", "")
+        example_addr = f"{example_loc[0]}!{example_loc[1]}" if example_loc[0] else ""
+        default_sheet = example_loc[0] if example_loc[0] else ""
+        rendered_with_values = render_formula_with_values(example_formula, default_sheet, wb_values)
+        # Linjeformat som i Opsummering!B5
+        line = (
+            f"Ark: {default_sheet} | Forekomster: {total} | Normaliseret: {normalize_formula(example_formula)} | "
+            f"Eksempel: {rendered_with_values} | Lokation: {example_addr}"
+        )
+        lines.append(line)
+
+    formulas_agg = "\n\n".join(lines)
+
+    # --- Returnér i præcis prompt-input-struktur ---
+    return f"[Context]\n{context_agg}\n\n[Formulas]\n{formulas_agg}\n"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Forhåndsvis udtræk af formler fra Excel.")
@@ -458,7 +519,10 @@ def main() -> None:
     sim_group.add_argument("--similarity", dest="similarity", action="store_true", help="Vis lighedsgrupper (overstyrer standard)")
     sim_group.add_argument("--no-similarity", dest="similarity", action="store_false", help="Skjul lighedsgrupper (overstyrer standard)")
     parser.set_defaults(similarity=DEFAULT_SIMILARITY)
-    parser.add_argument("--out", help="Gem rapport til fil (txt). Hvis udeladt, printes til skærm.")
+    parser.add_argument(
+        "--out",
+        help="Gem preview-tekst (matcher promptens [Context]/[Formulas]) til fil (.txt). Hvis udeladt, printes til skærm."
+    )
     parser.add_argument("--export-xlsx", help="Gem organiseret Excel-rapport til denne sti (.xlsx)")
     parser.add_argument("--dest-dir", help="Destinationsmappe til standard-eksport (hvis udeladt, vælges via GUI)")
     args = parser.parse_args()
@@ -471,22 +535,18 @@ def main() -> None:
         print(f"Filen findes ikke: {xlsx_path}")
         sys.exit(1)
 
+    # Indlæs formler og byg preview-teksten, som matcher prompt-strukturen
     mapping = collect_formulas(xlsx_path)
-    report = summarize(mapping, args.max_examples)
-    if args.similarity:
-        report += "\n\n" + summarize_similarity(mapping, args.max_examples)
+    preview_text = build_preview_text(xlsx_path, mapping, args.max_examples)
 
-    # Decide default export destinations if none provided
-    did_export_any = False
+    # Bestem destinationsmappe hvis ikke angivet
     default_folder = None
     if not args.export_xlsx or not args.out:
-        # Ask for destination folder if not provided via --dest-dir
         default_folder = args.dest_dir or pick_destination_dir_gui()
         if not default_folder:
-            # Fallback: same folder as input file
             default_folder = os.path.dirname(os.path.abspath(xlsx_path))
 
-    # Create a subfolder to keep outputs organized
+    # Opret tidsstemplet undermappe til outputs
     from datetime import datetime
     base_name = os.path.splitext(os.path.basename(xlsx_path))[0]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -494,30 +554,24 @@ def main() -> None:
     try:
         os.makedirs(output_folder, exist_ok=True)
     except Exception:
-        # If we cannot create, fallback to default folder directly
         output_folder = default_folder
 
-    # Excel export path
+    # Excel-rapport
     excel_out_path = args.export_xlsx or os.path.join(output_folder, "preview_report.xlsx")
     if not excel_out_path.lower().endswith('.xlsx'):
         excel_out_path = os.path.join(output_folder, "preview_report.xlsx")
     saved_xlsx = export_to_excel(xlsx_path, mapping, args.similarity, args.max_examples, excel_out_path)
     print(f"Excel-rapport gemt: {saved_xlsx}")
-    did_export_any = True
 
-    # Text export path
-    text_out_path = args.out or os.path.join(output_folder, "preview_report.txt")
+    # Preview-tekst (matcher [Context]/[Formulas])
+    text_out_path = args.out or os.path.join(output_folder, "preview_text.txt")
     with open(text_out_path, "w", encoding="utf-8") as f:
-        f.write(report)
-    print(f"Tekstrapport gemt: {text_out_path}")
-    did_export_any = True
+        f.write(preview_text)
+    print(f"Preview-tekst gemt: {text_out_path}")
 
-    # Also print to console for quick glance
+    # Print til konsol hvis --out udelades
     if not args.out:
-        print(report)
-
+        print(preview_text)
 
 if __name__ == "__main__":
     main()
-
-
